@@ -1,0 +1,9 @@
+# Temporary files
+page-*.png
+*.aux
+*.out
+*.toc
+__pycache__/
+*.pyc
+.system_generated/
+scratch/
