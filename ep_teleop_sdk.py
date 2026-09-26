@@ -9,16 +9,18 @@ Author: PhD Robotics Candidate
 Instructor: Prof. Aamer Iqbal Bhatti
 
 Usage:
-    python ep_teleop_sdk.py --conn_type rndis --duration 30 --output telemetry_rndis_30s.csv
-    python ep_teleop_sdk.py --conn_type ap    --duration 30 --output telemetry_ap_30s.csv
+    python3 ep_teleop_sdk.py --conn_type rndis --duration 30 --output telemetry_rndis_30s.csv
+    python3 ep_teleop_sdk.py --conn_type ap    --duration 30 --output telemetry_ap_30s.csv
 
 Key Bindings:
-    'W' / 'S' : Forward / Backward (vx = +/- 0.5 m/s)
-    'A' / 'D' : Lateral strafing Left / Right (vy = -/+ 0.5 m/s)
-    'Q' / 'E' : Yaw CCW / CW rotation (wz = +/- 45 deg/s)
-    'Space'   : Emergency Stop (vx = vy = wz = 0)
-    Key Release : Immediate Failsafe Stop
-    'Ctrl+C' or 'Esc' : Exit script safely
+    'W' / Up-Arrow    : Forward (vx = +0.5 m/s)
+    'S' / Down-Arrow  : Backward (vx = -0.5 m/s)
+    'A' / Left-Arrow  : Lateral strafe Left (vy = +0.5 m/s)
+    'D' / Right-Arrow : Lateral strafe Right (vy = -0.5 m/s)
+    'Q' / 'E'         : Yaw CCW / CW rotation (wz = +/- 45 deg/s)
+    'Space' / 'X'     : Emergency Stop (vx = vy = wz = 0)
+    Key Release       : Immediate Failsafe Stop
+    'Esc' / 'Ctrl+C'  : Exit script safely
 """
 
 import os
@@ -35,19 +37,67 @@ try:
     from robomaster import robot
     from robomaster import chassis
     from robomaster import battery
+    from robomaster import led
     ROBOMASTER_AVAILABLE = True
 except ImportError:
     ROBOMASTER_AVAILABLE = False
     print("[WARNING] robomaster Python SDK not installed in current environment.")
     print("          Running in simulation/mock mode for verification.")
 
-# Keyboard capture via pynput (standard) or fallback
-try:
-    from pynput import keyboard
-    PYNPUT_AVAILABLE = True
-except ImportError:
-    PYNPUT_AVAILABLE = False
-    print("[WARNING] pynput not installed. Non-blocking keyboard capture requires 'pip install pynput'.")
+
+def get_key_nonblocking(timeout=0.08):
+    """
+    Reads a single character from terminal standard input without requiring Enter.
+    Supports both WASD and Arrow Keys across Linux, WSL, and Windows.
+    """
+    if sys.platform == 'win32':
+        import msvcrt
+        start = time.time()
+        while time.time() - start < timeout:
+            if msvcrt.kbhit():
+                try:
+                    ch = msvcrt.getch()
+                    if ch in (b'\x00', b'\xe0'):  # Arrow key prefix
+                        arrow = msvcrt.getch()
+                        if arrow == b'H': return 'w'  # Up
+                        if arrow == b'P': return 's'  # Down
+                        if arrow == b'K': return 'a'  # Left
+                        if arrow == b'M': return 'd'  # Right
+                    elif ch == b'\x1b':
+                        return 'esc'
+                    return ch.decode('utf-8', errors='ignore').lower()
+                except Exception:
+                    return ''
+            time.sleep(0.01)
+        return ''
+    else:
+        import select
+        import termios
+        import tty
+        if not sys.stdin.isatty():
+            time.sleep(timeout)
+            return ''
+        fd = sys.stdin.fileno()
+        old_settings = termios.tcgetattr(fd)
+        try:
+            tty.setcbreak(fd)
+            rlist, _, _ = select.select([sys.stdin], [], [], timeout)
+            if rlist:
+                ch = sys.stdin.read(1)
+                if ch == '\x1b':
+                    # Check if it's an arrow key sequence (\x1b[A, \x1b[B, etc.)
+                    rlist2, _, _ = select.select([sys.stdin], [], [], 0.02)
+                    if rlist2:
+                        seq = sys.stdin.read(2)
+                        if seq == '[A': return 'w'  # Up Arrow -> Forward
+                        if seq == '[B': return 's'  # Down Arrow -> Backward
+                        if seq == '[D': return 'a'  # Left Arrow -> Strafe Left
+                        if seq == '[C': return 'd'  # Right Arrow -> Strafe Right
+                    return 'esc'
+                return ch.lower()
+            return ''
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
 
 
 class RoboMasterTeleopTelemetry:
@@ -77,9 +127,6 @@ class RoboMasterTeleopTelemetry:
         # Robot instance
         self.ep_robot = None
 
-        # Active pressed keys tracker for failsafe
-        self.pressed_keys = set()
-
     def connect(self):
         """Initializes connection to the RoboMaster EP chassis."""
         print(f"[*] Initializing RoboMaster EP connection (mode: {self.conn_type.upper()})...")
@@ -96,7 +143,14 @@ class RoboMasterTeleopTelemetry:
             
             # Print hardware version info
             version = self.ep_robot.get_version()
-            print(f"[+] Connected successfully! Robot Hardware Version: {version}")
+            sn = self.ep_robot.get_sn()
+            print(f"[+] Connected successfully! SN: {sn} | Version: {version}")
+
+            # Set chassis LEDs to green
+            try:
+                self.ep_robot.led.set_led(comp=led.COMP_ALL, r=0, g=255, b=0, effect=led.EFFECT_ON)
+            except Exception:
+                pass
 
             # Subscribe to telemetry streams at 10 Hz
             self.ep_robot.battery.sub_battery_info(freq=10, callback=self._on_battery_info)
@@ -137,52 +191,6 @@ class RoboMasterTeleopTelemetry:
     def stop_motion(self):
         """Immediate failsafe stop."""
         self.dispatch_motion(0.0, 0.0, 0.0)
-
-    def on_press(self, key):
-        """Key press event handler."""
-        try:
-            k = key.char.lower() if hasattr(key, 'char') and key.char else None
-        except Exception:
-            k = None
-
-        if k:
-            self.pressed_keys.add(k)
-            if k == 'w':
-                self.dispatch_motion(self.vx_val, 0.0, 0.0)
-            elif k == 's':
-                self.dispatch_motion(-self.vx_val, 0.0, 0.0)
-            elif k == 'a':
-                self.dispatch_motion(0.0, self.vy_val, 0.0)
-            elif k == 'd':
-                self.dispatch_motion(0.0, -self.vy_val, 0.0)
-            elif k == 'q':
-                self.dispatch_motion(0.0, 0.0, self.wz_val)
-            elif k == 'e':
-                self.dispatch_motion(0.0, 0.0, -self.wz_val)
-        else:
-            # Check for Spacebar (emergency stop)
-            if key == keyboard.Key.space:
-                print("\n[FAILSAFE] Spacebar pressed! Emergency Stop executed.")
-                self.stop_motion()
-            elif key == keyboard.Key.esc:
-                print("\n[EXIT] Esc pressed. Exiting...")
-                self.is_running = False
-                return False
-
-    def on_release(self, key):
-        """Key release event handler: immediate failsafe stop."""
-        try:
-            k = key.char.lower() if hasattr(key, 'char') and key.char else None
-        except Exception:
-            k = None
-
-        if k in self.pressed_keys:
-            self.pressed_keys.remove(k)
-
-        # If movement keys are released and no movement keys remain pressed, stop chassis
-        movement_keys = {'w', 's', 'a', 'd', 'q', 'e'}
-        if not (self.pressed_keys & movement_keys):
-            self.stop_motion()
 
     def telemetry_logger_loop(self, duration=30):
         """Logs telemetry concurrently at 10 Hz (period = 0.1s) into a CSV file."""
@@ -254,33 +262,59 @@ class RoboMasterTeleopTelemetry:
         logger_thread.daemon = True
         logger_thread.start()
 
-        # Keyboard listener
-        if PYNPUT_AVAILABLE:
-            listener = keyboard.Listener(on_press=self.on_press, on_release=self.on_release)
-            listener.start()
-            print("[+] Keyboard teleoperation active. Press 'W/S/A/D/Q/E' to drive, Space to stop, Esc to exit.")
+        print("\n" + "="*60)
+        print(" [KEYBOARD TELEOPERATION ACTIVE]")
+        print("  W / Up-Arrow    : Move Forward (0.5 m/s)")
+        print("  S / Down-Arrow  : Move Backward (0.5 m/s)")
+        print("  A / Left-Arrow  : Strafe Left (0.5 m/s)")
+        print("  D / Right-Arrow : Strafe Right (0.5 m/s)")
+        print("  Q / E           : Rotate CCW / CW (45 deg/s)")
+        print("  Space / X       : Emergency Stop")
+        print("  Esc             : Exit Teleoperation")
+        print("="*60 + "\n")
 
-            try:
-                logger_thread.join()
-            except KeyboardInterrupt:
-                print("\n[INTERRUPT] Caught KeyboardInterrupt. Shutting down...")
-            finally:
-                self.is_running = False
-                listener.stop()
-        else:
-            print("[!] Running without keyboard listener (logger only). Waiting for duration...")
-            try:
-                logger_thread.join()
-            except KeyboardInterrupt:
-                print("\n[INTERRUPT] Shutting down...")
-            finally:
-                self.is_running = False
+        start_time = time.time()
+        end_time = start_time + duration if duration > 0 else float('inf')
+        last_key_time = 0.0
 
-        self.cleanup()
+        try:
+            while self.is_running and (time.time() < end_time):
+                key = get_key_nonblocking(timeout=0.08)
+                if key:
+                    last_key_time = time.time()
+                    if key == 'w':
+                        self.dispatch_motion(self.vx_val, 0.0, 0.0)
+                    elif key == 's':
+                        self.dispatch_motion(-self.vx_val, 0.0, 0.0)
+                    elif key == 'a':
+                        self.dispatch_motion(0.0, self.vy_val, 0.0)
+                    elif key == 'd':
+                        self.dispatch_motion(0.0, -self.vy_val, 0.0)
+                    elif key == 'q':
+                        self.dispatch_motion(0.0, 0.0, self.wz_val)
+                    elif key == 'e':
+                        self.dispatch_motion(0.0, 0.0, -self.wz_val)
+                    elif key in (' ', 'x'):
+                        print("\n[FAILSAFE] Stop commanded.")
+                        self.stop_motion()
+                    elif key in ('esc', '\x03'):  # Esc or Ctrl+C
+                        print("\n[EXIT] Exit key pressed.")
+                        break
+                else:
+                    # Dead-man failsafe: if no key pressed for 0.4s, stop robot
+                    if last_key_time > 0 and (time.time() - last_key_time > 0.4):
+                        self.stop_motion()
+                        last_key_time = 0.0
+        except KeyboardInterrupt:
+            print("\n[INTERRUPT] Caught KeyboardInterrupt. Shutting down...")
+        finally:
+            self.is_running = False
+            logger_thread.join(timeout=2.0)
+            self.cleanup()
 
     def cleanup(self):
         """Safely stops the robot and releases SDK resources."""
-        print("[*] Performing safe shutdown...")
+        print("\n[*] Performing safe shutdown...")
         self.stop_motion()
         time.sleep(0.2)
         if ROBOMASTER_AVAILABLE and self.ep_robot:
@@ -296,8 +330,8 @@ class RoboMasterTeleopTelemetry:
 
 def main():
     parser = argparse.ArgumentParser(description="RoboMaster EP Teleoperation & 10Hz Telemetry Logging (Native SDK)")
-    parser.add_argument("--conn_type", type=str, choices=["rndis", "ap", "sta"], default="rndis",
-                        help="Connection type: 'rndis' (wired USB) or 'ap' (direct Wi-Fi hotspot)")
+    parser.add_argument("--conn_type", "--conn", type=str, choices=["rndis", "ap", "sta"], default="rndis",
+                        dest="conn_type", help="Connection type: 'rndis' (wired USB) or 'ap' (direct Wi-Fi hotspot)")
     parser.add_argument("--ip", type=str, default=None, help="Target robot IP (optional)")
     parser.add_argument("--duration", type=int, default=30, help="Trial duration in seconds (default: 30)")
     parser.add_argument("--output", type=str, default=None, help="Output CSV path (default: telemetry_<conn_type>_<duration>s.csv)")

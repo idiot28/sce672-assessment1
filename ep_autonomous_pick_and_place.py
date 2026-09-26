@@ -673,8 +673,8 @@ class AutonomousPickAndPlace:
 # =============================================================================
 def main():
     parser = argparse.ArgumentParser(description="RoboMaster EP Autonomous Pick-and-Place (Green Bottle to White Square)")
-    parser.add_argument("--conn_type", type=str, choices=["rndis", "ap", "sta"], default="rndis",
-                        help="Physical connection type to robot: 'rndis' (wired USB) or 'ap' (direct Wi-Fi hotspot)")
+    parser.add_argument("--conn_type", "--conn", type=str, choices=["rndis", "ap", "sta"], default="rndis",
+                        dest="conn_type", help="Physical connection type to robot: 'rndis' (wired USB) or 'ap' (direct Wi-Fi hotspot)")
     parser.add_argument("--mock", action="store_true",
                         help="Run in mock simulation mode (generates synthetic visual feed and simulated motion)")
     parser.add_argument("--no-gui", dest="gui", action="store_false",
