@@ -71,7 +71,7 @@ Instead of dual-booting Ubuntu, I set up my environment using \textbf{WSL 2 (Ubu
 
 Here is how I verified that both connection methods work:
 \begin{itemize}[noitemsep,topsep=2pt]
-    \item \textbf{Wired USB (RNDIS):} I attached the RoboMaster's USB network device to WSL with \texttt{usbipd wsl attach}. I verified the connection by pinging \texttt{192.168.42.2}, getting consistent $<1$~ms replies with no packet loss.
+    \item \textbf{Wired USB (RNDIS):} The RoboMaster communicates as an RNDIS device, appearing directly in WSL under interface \texttt{eth2} via mirrored networking (or attached using \texttt{usbipd attach --wsl}). I verified the connection by pinging \texttt{192.168.42.2}, getting consistent $<1.5$~ms replies with no packet loss.
     \item \textbf{Wi-Fi Hotspot (AP):} I enabled mirrored networking in \texttt{.wslconfig} so WSL shares the host Wi-Fi adapter directly. Once connected to the robot's AP network, I verified that WSL pings \texttt{192.168.12.1} directly and runs the Python SDK without socket errors.
 \end{itemize}
 
